@@ -138,7 +138,7 @@
 <div class="header">
   <div>
     <h1>Laser&amp;Co SP Interior</h1>
-    <p>Relat&oacute;rio de Campanhas &middot; 15 abr &ndash; 14 mai 2026</p>
+    <p id="header-periodo">Relat&oacute;rio de Campanhas</p>
   </div>
   <div class="header-right" id="last-update">Per&iacute;odo: 15/04 a 14/05/2026</div>
 </div>
@@ -168,7 +168,7 @@
   </div>
   <div class="toast" id="toast"></div>
 
-  <footer>Laser&amp;Co SP Interior &middot; Mogi das Cruzes &middot; S&atilde;o Jos&eacute; dos Campos &middot; Suzano &middot; Dados: Meta Ads Manager &middot; 15/04 a 14/05/2026</footer>
+  <footer id="footer-periodo">Laser&amp;Co SP Interior &middot; Mogi das Cruzes &middot; S&atilde;o Jos&eacute; dos Campos &middot; Suzano &middot; Dados: Meta Ads Manager</footer>
 </div>
 
 <!-- ══ SEÇÕES DE IMPRESSÃO ══ -->
@@ -178,7 +178,7 @@
     <div class="pp-header" style="background:#4f6af0">
       <div>
         <div class="pp-title">L&amp;C Mogi das Cruzes</div>
-        <div class="pp-sub">Laser&amp;Co SP Interior &middot; Abr&ndash;Mai 2026 &middot; Campanha: Conversas WPP</div>
+        <div class="pp-sub" id="pp-sub-mogi"></div>
       </div>
       <div class="pp-meta" id="pp-meta-mogi"></div>
     </div>
@@ -194,7 +194,7 @@
     <div class="pp-header" style="background:#7c3aed">
       <div>
         <div class="pp-title">L&amp;C S&atilde;o Jos&eacute; dos Campos</div>
-        <div class="pp-sub">Laser&amp;Co SP Interior &middot; Abr&ndash;Mai 2026 &middot; Campanha: Conversas WPP</div>
+        <div class="pp-sub" id="pp-sub-sjc"></div>
       </div>
       <div class="pp-meta" id="pp-meta-sjc"></div>
     </div>
@@ -210,7 +210,7 @@
     <div class="pp-header" style="background:#f97316">
       <div>
         <div class="pp-title">L&amp;C Suzano</div>
-        <div class="pp-sub">Laser&amp;Co SP Interior &middot; Abr&ndash;Mai 2026 &middot; Campanha: Conversas WPP</div>
+        <div class="pp-sub" id="pp-sub-suzano"></div>
       </div>
       <div class="pp-meta" id="pp-meta-suzano"></div>
     </div>
@@ -306,6 +306,36 @@ function carregarLocalStorage() {
 // ============================================================
 const fmtBRL = v => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtN   = v => v.toLocaleString("pt-BR");
+
+const MESES_CURTOS = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+
+function getPeriodo() {
+  const datas = FRANQUIAS.flatMap(f => f.leads.filter(l => l.count > 0).map(l => l.data));
+  if (!datas.length) return null;
+  const sorted = [...datas].sort();
+  return { inicio: sorted[0], fim: sorted[sorted.length - 1] };
+}
+
+function atualizarPeriodo() {
+  const p = getPeriodo();
+  if (!p) return;
+  const [iy, im, id] = p.inicio.split("-");
+  const [fy, fm, fd] = p.fim.split("-");
+
+  const curto = `${parseInt(id)} ${MESES_CURTOS[parseInt(im)-1]} – ${parseInt(fd)} ${MESES_CURTOS[parseInt(fm)-1]} ${fy}`;
+  const longo = `${id}/${im}/${iy} a ${fd}/${fm}/${fy}`;
+
+  document.getElementById("header-periodo").textContent = `Relatório de Campanhas · ${curto}`;
+  document.getElementById("last-update").textContent    = `Período: ${longo}`;
+  document.getElementById("footer-periodo").textContent =
+    `Laser&Co SP Interior · Mogi das Cruzes · São José dos Campos · Suzano · Dados: Meta Ads Manager · ${longo}`;
+
+  const subTxt = `Laser&Co SP Interior · ${curto} · Campanha: Conversas WPP`;
+  ["mogi","sjc","suzano"].forEach(id => {
+    const el = document.getElementById(`pp-sub-${id}`);
+    if (el) el.textContent = subTxt;
+  });
+}
 
 function filtrar(id) {
   return id === "todas" ? FRANQUIAS : FRANQUIAS.filter(f => f.id === id);
@@ -663,6 +693,7 @@ document.getElementById("file-input-update").addEventListener("change", async (e
 
     const tabAtiva = document.querySelector(".tab.active")?.dataset.id || "todas";
     renderDashboard(tabAtiva);
+    atualizarPeriodo();
     showToast(`Dados atualizados: ${nomes.join(", ")}`, "ok");
     salvarLocalStorage();
 
@@ -818,6 +849,7 @@ document.querySelectorAll(".tab").forEach(tab =>
   tab.addEventListener("click", () => renderDashboard(tab.dataset.id)));
 
 carregarLocalStorage();
+atualizarPeriodo();
 renderDashboard("todas");
 </script>
 </body>
