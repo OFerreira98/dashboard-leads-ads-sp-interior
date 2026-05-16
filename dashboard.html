@@ -498,7 +498,61 @@ async function processarXLSX(file) {
   return byUnidade;
 }
 
-async function processarCSV(file) {
+function parseCSVRow(line) {
+  const cols = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQ = !inQ; continue; }
+    if (ch === ',' && !inQ) { cols.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  cols.push(cur);
+  return cols;
+}
+
+async function processarCampanhaCSV(file) {
+  const text  = await file.text();
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return {};
+
+  const header = parseCSVRow(lines[0]).map(c => c.toLowerCase());
+  const iDate  = header.findIndex(c => c.includes("início") || c.includes("inicio"));
+  const iNome  = header.findIndex(c => c.includes("nome da campanha") || c.includes("campanha"));
+  const iConv  = header.findIndex(c => c.includes("resultado") || c.includes("conversa") || c.includes("messaging"));
+  const iGasto = header.findIndex(c => c.includes("valor usado") || c.includes("valor gasto"));
+
+  const cDate  = iDate  >= 0 ? iDate  : 0;
+  const cNome  = iNome  >= 0 ? iNome  : 2;
+  const cConv  = iConv  >= 0 ? iConv  : 4;
+  const cGasto = iGasto >= 0 ? iGasto : 9;
+
+  const byUnidade = {};
+
+  for (let r = 1; r < lines.length; r++) {
+    const row      = parseCSVRow(lines[r]);
+    const nomeCamp = (row[cNome] || "").trim();
+    if (!nomeCamp) continue;
+
+    const uid = detectarUnidade(nomeCamp);
+    if (!uid) continue;
+
+    if (!byUnidade[uid]) byUnidade[uid] = { leads: {}, investimento: 0 };
+
+    const dateStr = (row[cDate] || "").trim();
+    const conv    = parseNum(row[cConv]);
+    const gasto   = parseNum(row[cGasto]);
+
+    if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      byUnidade[uid].leads[dateStr] = (byUnidade[uid].leads[dateStr] || 0) + conv;
+    }
+    byUnidade[uid].investimento += gasto;
+  }
+
+  return byUnidade;
+}
+
+async function processarInvoiceCSV(file) {
   const text  = await file.text();
   const lines = text.split(/\r?\n/);
   let franquiaId = null, totalAdicionado = 0, totalCobrado = 0;
@@ -519,6 +573,11 @@ async function processarCSV(file) {
 
   if (!franquiaId || (!totalAdicionado && !totalCobrado)) return null;
   return { franquiaId, saldo: totalAdicionado - totalCobrado };
+}
+
+function ehCampanhaCSV(text) {
+  const primeira = text.split(/\r?\n/)[0].toLowerCase();
+  return primeira.includes("nome da campanha") || primeira.includes("início dos relatórios") || primeira.includes("inicio dos relatorios");
 }
 
 document.getElementById("btn-atualizar").addEventListener("click", () => {
@@ -552,11 +611,27 @@ document.getElementById("file-input-update").addEventListener("change", async (e
           updates[uid].temXLSX = true;
         }
       } else if (ext === "csv") {
-        const data = await processarCSV(file);
-        if (data) {
-          if (!updates[data.franquiaId]) updates[data.franquiaId] = {};
-          updates[data.franquiaId].saldo  = data.saldo;
-          updates[data.franquiaId].temCSV = true;
+        const text = await file.text();
+        if (ehCampanhaCSV(text)) {
+          const blob = new Blob([text], { type: "text/csv" });
+          const data = await processarCampanhaCSV(new File([blob], file.name));
+          for (const [uid, d] of Object.entries(data)) {
+            if (!updates[uid]) updates[uid] = {};
+            if (!updates[uid].leads) updates[uid].leads = {};
+            for (const [dt, n] of Object.entries(d.leads)) {
+              updates[uid].leads[dt] = (updates[uid].leads[dt] || 0) + n;
+            }
+            updates[uid].investimento = (updates[uid].investimento || 0) + d.investimento;
+            updates[uid].temXLSX = true;
+          }
+        } else {
+          const blob = new Blob([text], { type: "text/csv" });
+          const data = await processarInvoiceCSV(new File([blob], file.name));
+          if (data) {
+            if (!updates[data.franquiaId]) updates[data.franquiaId] = {};
+            updates[data.franquiaId].saldo  = data.saldo;
+            updates[data.franquiaId].temCSV = true;
+          }
         }
       }
     }
