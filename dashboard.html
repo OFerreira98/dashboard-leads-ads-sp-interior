@@ -8,6 +8,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -62,8 +63,10 @@
     /* ── Action buttons ── */
     .action-btns { display: flex; gap: 12px; justify-content: center; margin-bottom: 14px; flex-wrap: wrap; }
     .btn { padding: 12px 24px; border-radius: 50px; font-size: 14px; font-weight: 700; cursor: pointer; border: none; transition: all .18s; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
-    .btn-wa  { background: #25D366; color: #fff; box-shadow: 0 4px 14px rgba(37,211,102,0.3); }
+    .btn-wa     { background: #25D366; color: #fff; box-shadow: 0 4px 14px rgba(37,211,102,0.3); }
     .btn-wa:hover { background: #1ebe5d; transform: translateY(-1px); }
+    .btn-attach { background: var(--card); color: var(--text); border: 2px solid var(--border); }
+    .btn-attach:hover { border-color: #94a3b8; background: #f8fafc; }
     .btn-pdf { background: var(--text); color: #fff; box-shadow: 0 4px 14px rgba(26,31,54,0.2); }
     .btn-pdf:hover { background: #2d3561; transform: translateY(-1px); }
     .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none !important; }
@@ -159,7 +162,9 @@
 
   <div class="action-btns">
     <a class="btn btn-wa" href="https://wa.me/5545998247530" target="_blank">&#128172; Falar com o Gestor</a>
+    <button class="btn btn-attach" id="btn-atualizar">&#8635; Atualizar Dados</button>
     <button class="btn btn-pdf" id="btn-pdf">&#8681; Baixar em PDF</button>
+    <input type="file" id="file-input-update" multiple accept=".xlsx,.xls,.csv" style="display:none">
   </div>
   <div class="toast" id="toast"></div>
 
@@ -278,6 +283,25 @@ const FRANQUIAS = [
 ];
 
 // ============================================================
+// PERSISTÊNCIA
+// ============================================================
+function salvarLocalStorage() {
+  localStorage.setItem("LASER_DASH_SP_INT_V1", JSON.stringify(FRANQUIAS));
+}
+
+function carregarLocalStorage() {
+  const salvos = localStorage.getItem("LASER_DASH_SP_INT_V1");
+  if (!salvos) return;
+  try {
+    const dados = JSON.parse(salvos);
+    FRANQUIAS.forEach(f => {
+      const s = dados.find(x => x.id === f.id);
+      if (s) { f.investimento = s.investimento; f.saldoConta = s.saldoConta; f.leads = s.leads; }
+    });
+  } catch(e) { console.error("Erro ao carregar dados salvos", e); }
+}
+
+// ============================================================
 // HELPERS
 // ============================================================
 const fmtBRL = v => "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -387,6 +411,197 @@ function showToast(msg, tipo = "ok", dur = 3500) {
 }
 
 // ============================================================
+// ATUALIZAR DADOS — parsing XLSX e CSV no browser
+// ============================================================
+const CAMP_PATTERNS = {
+  mogi:   [/MOGI/i],
+  sjc:    [/\bSJC\b/i, /S[AÃ]O[\s\-]*JOS[EÉ]/i],
+  suzano: [/SUZANO/i, /CAMP[\s_]*ABO/i],
+};
+
+const INVOICE_CONTAS = {};
+
+function detectarUnidade(nomeCampanha) {
+  const nome = String(nomeCampanha).toUpperCase();
+  for (const [id, pats] of Object.entries(CAMP_PATTERNS)) {
+    if (pats.some(p => p.test(nome))) return id;
+  }
+  return null;
+}
+
+function parseBRLInv(str) {
+  const s = String(str).trim();
+  if (/^\d+\.\d{3},\d{2}$/.test(s)) return parseFloat(s.replace(/\./g, "").replace(",", "."));
+  if (/^\d+,\d{2}$/.test(s))        return parseFloat(s.replace(",", "."));
+  return parseFloat(s.replace(/[^0-9.]/g, "")) || 0;
+}
+
+function parseNum(v) {
+  if (typeof v === "number") return v;
+  return parseBRLInv(String(v));
+}
+
+function excelDateToISO(serial) {
+  const utc = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+  return utc.toISOString().substring(0, 10);
+}
+
+async function processarXLSX(file) {
+  const buf = await file.arrayBuffer();
+  const wb  = XLSX.read(buf, { type: "array", cellDates: false });
+  const ws  = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+  if (rows.length < 2) return {};
+
+  const header = rows[0].map(c => String(c).toLowerCase());
+  const iDate  = header.findIndex(c => c.includes("início") || c.includes("inicio") || c.includes("data"));
+  const iNome  = header.findIndex(c => c.includes("nome da campanha") || c.includes("campanha"));
+  const iConv  = header.findIndex(c => c.includes("conversa") || c.includes("messaging") || c.includes("resultado"));
+  const iGasto = header.findIndex(c => c.includes("valor usado") || c.includes("valor gasto") || c.includes("amount"));
+
+  const cDate  = iDate  >= 0 ? iDate  : 0;
+  const cNome  = iNome  >= 0 ? iNome  : 2;
+  const cConv  = iConv  >= 0 ? iConv  : 4;
+  const cGasto = iGasto >= 0 ? iGasto : 9;
+
+  const byUnidade = {};
+
+  for (let r = 1; r < rows.length; r++) {
+    const row      = rows[r];
+    const nomeCamp = String(row[cNome] || "").trim();
+    if (!nomeCamp) continue;
+
+    const uid = detectarUnidade(nomeCamp);
+    if (!uid) continue;
+
+    if (!byUnidade[uid]) byUnidade[uid] = { leads: {}, investimento: 0 };
+
+    const rawDate = row[cDate];
+    let dateStr = "";
+    if (typeof rawDate === "number" && rawDate > 1000) {
+      dateStr = excelDateToISO(rawDate);
+    } else {
+      const s  = String(rawDate).trim();
+      const m1 = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m1) dateStr = `${m1[3]}-${m1[2]}-${m1[1]}`;
+      else if (m2) dateStr = s;
+    }
+
+    const conv  = parseNum(row[cConv]);
+    const gasto = parseNum(row[cGasto]);
+
+    if (dateStr) byUnidade[uid].leads[dateStr] = (byUnidade[uid].leads[dateStr] || 0) + conv;
+    byUnidade[uid].investimento += gasto;
+  }
+
+  return byUnidade;
+}
+
+async function processarCSV(file) {
+  const text  = await file.text();
+  const lines = text.split(/\r?\n/);
+  let franquiaId = null, totalAdicionado = 0, totalCobrado = 0;
+
+  for (const line of lines) {
+    const contaM = line.match(/Conta:\s*(\d{10,})/);
+    if (contaM) franquiaId = INVOICE_CONTAS[contaM[1]] || null;
+
+    if (/Valor total cobrado/i.test(line)) {
+      const m = line.match(/"([\d.,]+)",BRL/) || line.match(/,([\d.,]+),BRL/);
+      if (m) totalCobrado = parseBRLInv(m[1]);
+    }
+    if (/Total de fundos adicionados/i.test(line)) {
+      const m = line.match(/"([\d.,]+)",BRL/) || line.match(/,([\d.,]+),BRL/);
+      if (m) totalAdicionado = parseBRLInv(m[1]);
+    }
+  }
+
+  if (!franquiaId || (!totalAdicionado && !totalCobrado)) return null;
+  return { franquiaId, saldo: totalAdicionado - totalCobrado };
+}
+
+document.getElementById("btn-atualizar").addEventListener("click", () => {
+  document.getElementById("file-input-update").click();
+});
+
+document.getElementById("file-input-update").addEventListener("change", async (e) => {
+  const files = [...e.target.files];
+  if (!files.length) return;
+
+  const btn  = document.getElementById("btn-atualizar");
+  const orig = btn.textContent;
+  btn.textContent = "Processando...";
+  btn.disabled = true;
+
+  try {
+    const updates = {};
+
+    for (const file of files) {
+      const ext = file.name.split(".").pop().toLowerCase();
+
+      if (ext === "xlsx" || ext === "xls") {
+        const data = await processarXLSX(file);
+        for (const [uid, d] of Object.entries(data)) {
+          if (!updates[uid]) updates[uid] = {};
+          if (!updates[uid].leads) updates[uid].leads = {};
+          for (const [dt, n] of Object.entries(d.leads)) {
+            updates[uid].leads[dt] = (updates[uid].leads[dt] || 0) + n;
+          }
+          updates[uid].investimento = (updates[uid].investimento || 0) + d.investimento;
+          updates[uid].temXLSX = true;
+        }
+      } else if (ext === "csv") {
+        const data = await processarCSV(file);
+        if (data) {
+          if (!updates[data.franquiaId]) updates[data.franquiaId] = {};
+          updates[data.franquiaId].saldo  = data.saldo;
+          updates[data.franquiaId].temCSV = true;
+        }
+      }
+    }
+
+    let atualizadas = 0;
+    const nomes = [];
+
+    for (const [uid, upd] of Object.entries(updates)) {
+      const f = FRANQUIAS.find(x => x.id === uid);
+      if (!f) continue;
+
+      if (upd.temXLSX) {
+        const datas = Object.keys(upd.leads).sort();
+        f.leads        = datas.map(d => ({ data: d, count: Math.round(upd.leads[d]) }));
+        f.investimento = Math.round(upd.investimento * 100) / 100;
+      }
+      if (upd.temCSV) {
+        f.saldoConta = Math.round(upd.saldo * 100) / 100;
+      }
+
+      atualizadas++;
+      nomes.push(f.nome.replace("L&C ", ""));
+    }
+
+    if (!atualizadas) {
+      showToast("Nenhuma unidade identificada nos arquivos", "err");
+      return;
+    }
+
+    const tabAtiva = document.querySelector(".tab.active")?.dataset.id || "todas";
+    renderDashboard(tabAtiva);
+    showToast(`Dados atualizados: ${nomes.join(", ")}`, "ok");
+    salvarLocalStorage();
+
+  } catch (err) {
+    console.error(err);
+    showToast("Erro ao processar arquivo: " + err.message, "err", 5000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+    e.target.value = "";
+  }
+});
+
+// ============================================================
 // EDITAR SALDO (manual — útil antes de compartilhar)
 // ============================================================
 function parseBRL(str) {
@@ -408,6 +623,7 @@ function editarSaldo(id) {
     const v = parseBRL(novo);
     if (!isNaN(v) && v >= 0) {
       f.saldoConta = Math.round(v * 100) / 100;
+      salvarLocalStorage();
       renderDashboard(id);
       showToast("Saldo atualizado!", "ok");
     }
@@ -526,6 +742,7 @@ document.getElementById("btn-pdf").addEventListener("click", async () => {
 document.querySelectorAll(".tab").forEach(tab =>
   tab.addEventListener("click", () => renderDashboard(tab.dataset.id)));
 
+carregarLocalStorage();
 renderDashboard("todas");
 </script>
 </body>
